@@ -86,16 +86,10 @@ class gMusicClient(object):
 		self.playlists["Thumbs Up"] = [song for song in songs if song['rating'] == 5]
 
 	def getSongStream(self, song):
-		urls = self.api.get_stream_urls(song["id"])
-		if len(urls) > 1:
-			print "Retrieving audio for %s" % (song["title"])
-			audio = self.api.get_stream_audio(song["id"])
-			cwd = os.getcwd();
-			with open(cwd+"/aa_buffer.mp3",'wb') as output:
-				output.write(audio)
-			return "file:///"+cwd+"/aa_buffer.mp3"
-		else:
-			return urls[0]
+		return self.api.get_stream_urls(song["id"])
+
+	def getStreamAudio(self, song):
+		return self.api.get_stream_audio(song["id"])
 
 	def thumbsUp(self, song):
 		try:
@@ -111,6 +105,9 @@ class mediaPlayer(object):
 	now_playing_song = None
 	queue = list()
 	queue_index = -1
+	buffered_song = None
+	buffered_uri = None
+	buffer_index = 0
 	play_mode = 0
 
 	def __init__(self):
@@ -154,9 +151,8 @@ class mediaPlayer(object):
 		global m_client
 		global lcd_man
 		global last_fm
-		song_url = m_client.getSongStream(song)
 		try:
-			self.player.set_property("uri", song_url)
+			self.player.set_property("uri", self.buffered_uri)
 			self.player.set_state(gst.STATE_PLAYING)
 			self.now_playing_song = song
 			self.print_current_song()
@@ -194,20 +190,44 @@ class mediaPlayer(object):
 			self.nextSong(1)
 
 	def playNextInQueue(self, n):
-		if (self.play_mode % 2) == 0:
-			self.queue_index += n
+		if (self.buffered_song == None):
+			self.bufferNextInQueue(n)
+
+		if (self.queue_index == -1):
+			self.stopPlayback()
+			self.set_terminal_title()
 		else:
-			self.queue_index = random.randint(0, (len(self.queue) - 1))
-		if (self.queue_index < len(self.queue)) and (self.queue_index >= 0):
-			next_song = self.queue[self.queue_index]
-			self.playSong(next_song)
+			self.playSong(self.buffered_song)
+			self.bufferNextInQueue(n)
+
+	def bufferNextInQueue(self,n):
+		self.queue_index = self.getNextInQueue(n)
+		self.buffered_song = self.queue[self.queue_index]
+		urls = m_client.getSongStream(self.buffered_song)
+		if len(urls) > 1:
+			print "Buffering %s by %s..." % (self.buffered_song["title"],self.buffered_song["artist"])
+			audio = m_client.getStreamAudio(self.buffered_song)
+			cwd = os.getcwd();
+			with open(cwd+"/aa_buffer"+str(self.buffer_index)+".mp3",'wb') as output:
+				output.write(audio)
+			self.buffered_uri = "file://"+cwd+"/aa_buffer"+str(self.buffer_index)+".mp3"
+			print "Done buffering"
+			self.buffer_index ^= 1
 		else:
+			self.buffered_uri = urls[0]
+		
+	def getNextInQueue(self,n):
+		next_queue = -1
+		if (self.play_mode %2) == 0:
+			next_queue = self.queue_index + n
+		else:
+			next_queue = random.randint(0, (len(self.queue) - 1))
+		if (next_queue >= len(self.queue)) or (next_queue < 0):
 			if (self.play_mode == 2) or (self.play_mode == 3):
-				self.queue_index = -1
-				self.playNextInQueue(1)
+				next_queue = getNextSongQueue(self,n)
 			else:
-				self.stopPlayback()
-				self.set_terminal_title()
+				next_queue = -1
+		return next_queue
 
 	def addToQueue(self, song):
 		self.queue.append(song)
@@ -559,9 +579,12 @@ class commandLineHandler(object):
 					play_mode += 1
 				if args[2].upper() == "REPEAT":
 					play_mode += 2
-				m_player.play_mode = play_mode
 			except IndexError:
 				print "Argument error!"
+				play_mode = m_player.play_mode
+		if m_player.play_mode % 2 != play_mode % 2:
+			m_player.bufferNextInQueue(1)
+		m_player.play_mode = play_mode
 		for case in switch(m_player.play_mode):
 			if case(0):
 				print "Play mode: Linear, No Repeat"
